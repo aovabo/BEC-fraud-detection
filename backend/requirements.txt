@@ -3,3 +3,4 @@ requests
 payman-paykit
 openai
 python-dotenv
+sqlite3
