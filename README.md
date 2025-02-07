@@ -300,8 +300,8 @@ curl -X GET "http://localhost:5000/check_customer_balance?customer_id=cust_123"
 
 ### **1. Clone the Repository**
 ```bash
-git clone https://github.com/your-username/payman-ai-api.git
-cd payman-ai-api
+git clone https://github.com/aovabo/safewire-ai.git
+cd safewire-ai
 ```
 
 ### **2. Install Dependencies**
