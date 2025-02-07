@@ -1,7 +1,6 @@
 # SafeWire AI - AI-Powered BEC Fraud Prevention
 
 ## **Use Case & Problem Statement**
-### **Understanding the Threat: Business Email Compromise (BEC)**
 **Business Email Compromise (BEC)** is a sophisticated cyber scam where attackers impersonate executives, vendors, or trusted parties to deceive businesses into making fraudulent financial transactions. 
 
 ### **Why is BEC a Critical Problem?**
