@@ -115,5 +115,3 @@ SafeWire AI does **not** require businesses (our customers) to create Payman AI 
 - Set up Payman API live environment.
 - Expand detection logic with AI models trained on real BEC scams.
 
-For further details, refer to the official FBI IC3 report: [IC3 BEC PSA 2024](https://www.ic3.gov/PSA/2024/PSA240911)
-
