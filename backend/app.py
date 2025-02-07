@@ -1,27 +1,29 @@
 import os
 import json
 import requests
+import sqlite3
+import hashlib
 import time
+import logging
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
-from paymanai import Paymanai
+from paymanai import Paymanai  # Correct import
+from paymanai.errors import PaymanError  # Error handling
 from langchain.chat_models import ChatOpenAI
-from langchain.schema import SystemMessage, HumanMessage
+from langchain.schema import AIMessage, HumanMessage, SystemMessage
+from typing import Union
+from decimal import Decimal
 
 # Load environment variables
 load_dotenv()
 
-# API Keys
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PAYMAN_API_SECRET = os.getenv("PAYMAN_API_SECRET")
-PAYMAN_ENVIRONMENT = os.getenv("PAYMAN_ENVIRONMENT", "sandbox")
+PAYMAN_ENVIRONMENT = os.getenv("PAYMAN_ENVIRONMENT", "sandbox")  # Use 'sandbox' for testing
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Initialize Flask app
 app = Flask(__name__)
-
-# Initialize LangChain AI for fraud detection
-llm = ChatOpenAI(model_name="gpt-4", openai_api_key=OPENAI_API_KEY)
 
 # Initialize Payman AI Client
 payman = Paymanai(
@@ -29,128 +31,151 @@ payman = Paymanai(
     environment=PAYMAN_ENVIRONMENT
 )
 
-# ------------------------------
-# ✅ AI Fraud Detection (LangChain)
-# ------------------------------
+# Initialize LangChain AI Agent
+llm = ChatOpenAI(model="gpt-4", temperature=0, openai_api_key=OPENAI_API_KEY)
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+
+# Ensure database exists for tracking transactions
+def init_db():
+    conn = sqlite3.connect("transactions.db")
+    cursor = conn.cursor()
+    cursor.execute("CREATE TABLE IF NOT EXISTS transactions (id TEXT PRIMARY KEY, vendor TEXT, amount REAL, status TEXT)")
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# Generate unique transaction ID
+def generate_transaction_id(email_text, vendor, amount):
+    return hashlib.sha256(f"{email_text}{vendor}{amount}".encode()).hexdigest()
+
+# AI Fraud Detection using LangChain Agent
 def analyze_email(email_text):
-    """AI analyzes email text for BEC fraud risk."""
-    response = llm([
-        SystemMessage(content="You are an AI specializing in Business Email Compromise (BEC) fraud detection."),
-        HumanMessage(content=f"Analyze this email:\n\n{email_text}\n\nReturn JSON response: {{'fraudulent': true/false, 'reason': '...'}}")
-    ])
-
     try:
-        return json.loads(response.content)
-    except json.JSONDecodeError:
-        return {"fraudulent": False, "reason": "AI error, unable to analyze"}
+        response = llm([SystemMessage(content="Analyze the following email for fraud risk. Respond in JSON with `fraudulent` (true/false) and `reason`."),
+                        HumanMessage(content=email_text)])
+        fraud_analysis = json.loads(response.content)
+        return fraud_analysis
+    except Exception as e:
+        logging.error(f"AI Fraud Detection Error: {e}")
+        return {"fraudulent": False, "reason": "AI unavailable, defaulting to safe."}
 
-# ------------------------------
-# ✅ Slack Alerts
-# ------------------------------
+# Send Slack Alerts for Fraud Detection
 def send_slack_alert(vendor, amount, reason):
-    """Sends a Slack alert for potential fraudulent transactions."""
     if not SLACK_WEBHOOK_URL:
-        print("⚠️ Slack Webhook not configured!")
+        logging.warning("Slack webhook not configured. Skipping alert.")
         return
+    message = {"text": f"🚨 Fraud Alert: Potential BEC Detected 🚨\nVendor: {vendor}\nAmount: ${amount}\nReason: {reason}"}
+    try:
+        requests.post(SLACK_WEBHOOK_URL, json=message)
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Slack notification failed: {e}")
 
-    message = {
-        "text": f"🚨 Fraud Alert: Potential BEC Detected 🚨\nVendor: {vendor}\nAmount: ${amount}\nReason: {reason}"
-    }
-    requests.post(SLACK_WEBHOOK_URL, json=message)
+# Centralized Payman API Error Handling
+def handle_api_error(response):
+    try:
+        error_data = response.json()
+        error_code = error_data.get("errorCode", "unknown_error")
+        error_message = error_data.get("message", "An unexpected error occurred.")
+        trace_id = error_data.get("traceId", "N/A")
 
-# ------------------------------
-# ✅ Process Payment Request
-# ------------------------------
+        logging.error(f"Payman API Error: {error_code} | {error_message} | Trace ID: {trace_id}")
+
+        error_mapping = {
+            "not_authorized": "Invalid API key. Please check your credentials.",
+            "insufficient_funds": "Insufficient funds to complete the transaction.",
+            "validation_error": "Invalid payment details. Please check the input fields.",
+            "entity_not_found": "Requested resource was not found.",
+            "not_allowed": "You do not have permission to perform this action.",
+        }
+
+        user_friendly_message = error_mapping.get(error_code, error_message)
+
+        return jsonify({
+            "status": "Failed",
+            "error": user_friendly_message,
+            "traceId": trace_id
+        }), response.status_code
+
+    except Exception as e:
+        logging.error(f"Error parsing Payman API response: {e}")
+        return jsonify({"status": "Failed", "error": "Unexpected error occurred."}), 500
+
+# ✅ **Process Payment Using Payman AI**
 @app.route("/process_payment", methods=["POST"])
 def process_payment():
-    """Handles fraud detection and securely processes payments."""
     data = request.json
-    email_text = data.get("email_text")
-    payment_details = data.get("payment_details")
+    transaction_id = generate_transaction_id(data["email_text"], data["payment_details"]["vendor"], data["payment_details"]["amount"])
 
-    # Step 1: AI Fraud Detection
-    fraud_result = analyze_email(email_text)
+    # Prevent duplicate transactions
+    conn = sqlite3.connect("transactions.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM transactions WHERE id = ?", (transaction_id,))
+    if cursor.fetchone():
+        conn.close()
+        return jsonify({"status": "Duplicate", "message": "This transaction has already been processed."}), 409
+
+    fraud_result = analyze_email(data["email_text"])
 
     if fraud_result["fraudulent"]:
-        send_slack_alert(payment_details["vendor"], payment_details["amount"], fraud_result["reason"])
+        send_slack_alert(data["payment_details"]["vendor"], data["payment_details"]["amount"], fraud_result["reason"])
+        conn.close()
         return jsonify({"status": "Blocked", "message": "Potential BEC detected!", "reason": fraud_result["reason"]}), 403
 
-    # Step 2: Securely Process Payment via Payman API (with retries)
-    return execute_payment_with_retries(payment_details)
-
-# ------------------------------
-# ✅ Secure Payment Execution with Retries
-# ------------------------------
-def execute_payment_with_retries(payment_details, retries=3):
-    """Retries the payment execution if Payman API fails."""
-    for attempt in range(retries):
-        try:
-            payment = payman.payments.send_payment(
-                amount_decimal=payment_details["amount"],
-                payment_destination_id=payment_details["vendor"],
-                memo="Invoice payment"
-            )
-            return jsonify({"status": "Success", "transaction": payment}), 200
-        except Exception as e:
-            print(f"⚠️ Payman API failed, retrying... ({attempt + 1}/{retries})")
-            time.sleep(2)  # Wait before retrying
-
-    return jsonify({"status": "Failed", "error": "Payman API unavailable after retries."}), 500
-
-# ------------------------------
-# ✅ Create Payee Endpoint (for New Vendors)
-# ------------------------------
-@app.route("/create_payee", methods=["POST"])
-def create_payee():
-    """Creates a new payment destination before sending funds."""
-    data = request.json
-
+    # Process Payment Using Payman AI
     try:
-        payee = payman.payments.create_payee(
-            type="US_ACH",
-            name=data["name"],
-            account_holder_name=data["account_holder_name"],
-            account_number=data["account_number"],
-            routing_number=data["routing_number"],
-            account_type=data["account_type"],
-            contact_details={
-                "email": data["email"],
-                "phone_number": data["phone_number"]
-            }
+        payment = payman.payments.send_payment(
+            amount_decimal=data["payment_details"]["amount"],
+            payment_destination_id=data["payment_details"]["vendor"],
+            memo="Invoice Payment",
+            customer_email=data["customer"]["email"],
+            customer_name=data["customer"]["name"]
         )
-        return jsonify({"status": "Success", "payee_id": payee["id"]}), 200
-    except Exception as e:
-        return jsonify({"status": "Failed", "error": str(e)}), 500
 
-# ------------------------------
-# ✅ Check Balance Endpoint
-# ------------------------------
-@app.route("/check_balance", methods=["GET"])
-def check_balance():
-    """Checks the AI Agent's available balance in USD."""
+        cursor.execute("INSERT INTO transactions (id, vendor, amount, status) VALUES (?, ?, ?, ?)",
+                       (transaction_id, data["payment_details"]["vendor"], data["payment_details"]["amount"], "Success"))
+        conn.commit()
+        conn.close()
+        return jsonify({"status": "Success", "transaction_reference": payment.reference}), 200
+    except PaymanError as e:
+        return jsonify({"status": "Failed", "error": e.message}), 400
+
+# ✅ **Check AI Agent Balance**
+@app.route("/check_agent_balance", methods=["GET"])
+def check_agent_balance():
+    currency = request.args.get("currency", "USD")
+
     try:
-        balance = payman.balances.get_spendable_balance("USD")
-        return jsonify({"status": "Success", "balance": balance}), 200
-    except Exception as e:
-        return jsonify({"status": "Failed", "error": str(e)}), 500
+        agent_balance = payman.balances.get_spendable_balance(currency)
+        return jsonify({"status": "Success", "agent_balance": float(agent_balance)}), 200
+    except PaymanError as e:
+        return jsonify({"status": "Failed", "error": e.message}), 400
 
-# ------------------------------
-# ✅ Webhook Handling (For Real-Time Payman Events)
-# ------------------------------
+# ✅ **Webhook Event Handler**
 @app.route("/webhook", methods=["POST"])
-def webhook():
-    """Handles real-time events from Payman AI."""
+def handle_webhook():
     event = request.json
 
-    if event["eventType"] == "customer-deposit.successful":
-        print(f"💰 Deposit received: ${event['details']['amount'] / 100}")
-    elif event["eventType"] == "approval-request.rejected":
-        send_slack_alert("Admin", "N/A", "A payment request was rejected.")
-    
-    return jsonify({"status": "Received"}), 200
+    if "eventType" not in event or "details" not in event:
+        logging.warning("Received malformed webhook event.")
+        return jsonify({"status": "Failed", "error": "Malformed event"}), 400
 
-# ------------------------------
-# ✅ Run Flask Server
-# ------------------------------
+    event_type = event["eventType"]
+    event_details = event["details"]
+
+    logging.info(f"Received webhook event: {event_type}")
+
+    if event_type == "customer-deposit.successful":
+        logging.info(f"Deposit successful for Customer {event_details.get('customerId')}")
+    elif event_type == "customer-deposit.failed":
+        logging.warning(f"Deposit FAILED for Customer {event_details.get('customerId')}")
+    else:
+        logging.warning(f"Unhandled webhook event: {event_type}")
+
+    return jsonify({"status": "Success", "message": "Webhook event processed"}), 200
+
+# ✅ **Run Flask App**
 if __name__ == "__main__":
     app.run(debug=True)
