@@ -110,8 +110,268 @@ SafeWire AI does **not** require businesses (our customers) to create Payman AI 
 
 ---
 
-## **Next Steps & Deployment**
-- Deploy the backend on AWS Lambda / Vercel.
-- Set up Payman API live environment.
-- Expand detection logic with AI models trained on real BEC scams.
+# Payman AI Payment Processing & Fraud Detection API Features
+
+## Overview
+This project provides a **secure payment processing API** powered by **Payman AI**, integrating fraud detection with **OpenAI**, transaction monitoring, Slack notifications, and LangChain AI integration for automated decision-making. The API supports:
+
+- **Secure Payment Processing** via Payman AI
+- **Fraud Detection & Prevention** using OpenAI
+- **Real-time Webhooks for Events** (Deposits, Approvals, Low Balances, etc.)
+- **Slack Notifications for Alerts** (Fraud, Payment Failures, etc.)
+- **Search & Manage Payees**
+- **Create Customer Deposit Links**
+- **Check AI Agent & Customer Balances**
+- **Production & Sandbox Mode Support**
+
+---
+
+## Tech Stack
+
+| Technology | Purpose |
+|------------|---------|
+| **Python** | Main backend language |
+| **Flask** | API framework |
+| **Payman AI SDK** | Payment processing & AI agent integration |
+| **OpenAI API** | Fraud detection and email analysis |
+| **SQLite** | Local transaction tracking |
+| **Slack Webhooks** | Alert notifications |
+| **LangChain** | AI-powered automation & agent integration |
+| **dotenv** | Environment variable management |
+
+---
+
+## Features & Endpoints
+
+### **1. Secure Payment Processing**
+#### Endpoint: `/send_payment` (POST)
+- Sends a payment using **Payman AI**.
+- Supports **existing payees** and **new destinations**.
+
+#### Request Body:
+```json
+{
+  "paymentDestinationId": "dest_123",
+  "amountDecimal": 50.00,
+  "memo": "Service payment"
+}
+```
+
+#### Response:
+```json
+{
+  "status": "Success",
+  "payment_reference": "pay_abc123"
+}
+```
+
+#### Error Handling:
+- **Insufficient Funds** → 400
+- **Invalid Destination** → 400
+- **Unauthorized API Key** → 401
+- **Server Issues** → 500
+
+---
+
+### **2. Payee Management**
+#### Endpoint: `/create_payee` (POST)
+- Creates a **US ACH**, **crypto**, or **Payman AI agent payee**.
+
+#### Request Body:
+```json
+{
+  "type": "US_ACH",
+  "name": "John Doe",
+  "account_holder_name": "John Doe",
+  "account_number": "1234567890",
+  "routing_number": "011000138",
+  "account_type": "checking",
+  "contact_details": { "email": "john@example.com" },
+  "tags": ["primary"]
+}
+```
+
+#### Response:
+```json
+{
+  "status": "Success",
+  "payee_id": "dest_123abc"
+}
+```
+
+---
+
+### **3. Search Payees**
+#### Endpoint: `/search_payees` (GET)
+- Find existing payees by **name**, **email**, or **type**.
+
+#### Request Example:
+```bash
+curl -X GET "http://localhost:5000/search_payees?name=John"
+```
+
+#### Response:
+```json
+{
+  "status": "Success",
+  "payees": [{ "id": "dest_123abc", "name": "John Doe" }]
+}
+```
+
+---
+
+### **4. Customer Deposits**
+#### Endpoint: `/create_deposit` (POST)
+- Generates a **checkout link** for customers to deposit funds.
+
+#### Request Body:
+```json
+{
+  "amountDecimal": 100.00,
+  "customer_id": "cust_123",
+  "customer_email": "customer@example.com"
+}
+```
+
+#### Response:
+```json
+{
+  "status": "Success",
+  "checkout_url": "https://payman.ai/checkout/cust_123"
+}
+```
+
+---
+
+### **5. Check Balances**
+#### Endpoint: `/check_agent_balance` (GET)
+- Retrieves AI agent’s available balance.
+
+#### Request:
+```bash
+curl -X GET "http://localhost:5000/check_agent_balance?currency=USD"
+```
+
+#### Response:
+```json
+{
+  "status": "Success",
+  "agent_balance": 150.00
+}
+```
+
+#### Endpoint: `/check_customer_balance` (GET)
+- Retrieves a **customer’s** balance.
+
+#### Request:
+```bash
+curl -X GET "http://localhost:5000/check_customer_balance?customer_id=cust_123"
+```
+
+#### Response:
+```json
+{
+  "status": "Success",
+  "customer_balance": 50.00
+}
+```
+
+---
+
+### **6. Webhooks**
+#### Endpoint: `/webhook` (POST)
+- Listens for real-time **events** (Deposits, Approvals, Failures, etc.).
+
+#### Example Webhook Event:
+```json
+{
+  "eventType": "customer-deposit.successful",
+  "details": {
+    "customerId": "user_123",
+    "amount": 10000,
+    "currency": "USD"
+  }
+}
+```
+
+---
+
+## **Setup & Installation**
+
+### **1. Clone the Repository**
+```bash
+git clone https://github.com/your-username/payman-ai-api.git
+cd payman-ai-api
+```
+
+### **2. Install Dependencies**
+```bash
+pip install -r requirements.txt
+```
+
+### **3. Set Up Environment Variables**
+Create a `.env` file:
+```
+PAYMAN_API_SECRET=your_api_key
+PAYMAN_ENVIRONMENT=sandbox  # Change to 'production' for live mode
+SLACK_WEBHOOK_URL=your_slack_webhook
+```
+
+### **4. Run the Application**
+```bash
+python app.py
+```
+
+The API will be accessible at `http://localhost:5000`.
+
+---
+
+## **Hosting & Deployment**
+### **Option 1: Docker**
+#### **Run with Docker**
+```bash
+docker build -t payman-api .
+docker run -p 5000:5000 --env-file .env payman-api
+```
+
+### **Option 2: Deploy to AWS/GCP/Vercel**
+Use **Gunicorn** for production:
+```bash
+gunicorn -w 4 -b 0.0.0.0:5000 app:app
+```
+
+---
+
+## **Using Sandbox vs. Production Mode**
+| Mode | API URL | API Key |
+|------|--------|---------|
+| **Sandbox** | `https://agent-sandbox.payman.ai/api` | `sk_test_...` |
+| **Production** | `https://agent.payman.ai/api` | `sk_live_...` |
+
+To switch **environments**, change `PAYMAN_ENVIRONMENT` in `.env`:
+```
+PAYMAN_ENVIRONMENT=production  # Use 'sandbox' for testing
+```
+
+---
+
+## **Security Best Practices**
+- **Do NOT expose API keys in public repositories**.
+- **Use environment variables for configuration**.
+- **Enable Slack alerts for fraud detection**.
+- **Use Payman AI’s Webhooks to track payments.**
+
+---
+
+## **Contributing**
+1. Fork the repository
+2. Create a feature branch
+3. Submit a pull request
+
+---
+
+## **License**
+This project is licensed under the MIT License.
+
+
 
