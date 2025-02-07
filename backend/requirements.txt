@@ -1,0 +1,5 @@
+flask
+requests
+payman-paykit
+openai
+python-dotenv
