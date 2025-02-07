@@ -1,6 +1,14 @@
+requirements = """
 flask
 requests
-payman-paykit
-openai
 python-dotenv
+paymanai
 sqlite3
+langchain
+openai
+fastapi
+uvicorn
+pydantic
+slack-sdk
+gunicorn
+"""
