@@ -1,0 +1,8 @@
+{
+  "name": "safewire-ai",
+  "dependencies": {
+    "next": "latest",
+    "react": "latest",
+    "react-dom": "latest"
+  }
+}
