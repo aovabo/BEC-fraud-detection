@@ -5,20 +5,20 @@ import sqlite3
 import hashlib
 import time
 from flask import Flask, request, jsonify
-from payman_paykit import Payman
+from paymanai import Payman
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
 
 PAYMAN_API_SECRET = os.getenv("PAYMAN_API_SECRET")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+PAYMAN_ENVIRONMENT = os.getenv("PAYMAN_ENVIRONMENT", "sandbox")  # Default to sandbox
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
 
 app = Flask(__name__)
 
 # Initialize Payman AI Client
-payman = Payman(api_key=PAYMAN_API_SECRET)
+payman = Payman(api_secret=PAYMAN_API_SECRET, environment=PAYMAN_ENVIRONMENT)
 
 # Ensure database exists
 def init_db():
@@ -39,7 +39,7 @@ def analyze_email(email_text):
     try:
         response = requests.post(
             "https://api.openai.com/v1/completions",
-            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+            headers={"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}", "Content-Type": "application/json"},
             json={
                 "model": "gpt-4",
                 "prompt": f"Analyze this email for fraud risk:\n{email_text}\n\nRespond in JSON:\n{{\"fraudulent\": true/false, \"reason\": \"...\"}}",
@@ -58,7 +58,7 @@ def send_slack_alert(vendor, amount, reason):
     except requests.exceptions.RequestException:
         print("Slack notification failed.")
 
-# API: Process Payment
+# API: Process Payment with Payman AI
 @app.route("/process_payment", methods=["POST"])
 def process_payment():
     data = request.json
@@ -79,22 +79,26 @@ def process_payment():
         conn.close()
         return jsonify({"status": "Blocked", "message": "Potential BEC detected!", "reason": fraud_result["reason"]}), 403
 
-    # Process transaction with Payman
-    try:
-        transaction = payman.transfers.create(
-            from_account_id="business_main_account",
-            to_account_id=data["payment_details"]["vendor"],
-            amount=data["payment_details"]["amount"],
-            currency="USD",
-            metadata={"reason": "Invoice payment"}
-        )
-        cursor.execute("INSERT INTO transactions (id, vendor, amount, status) VALUES (?, ?, ?, ?)",
-                       (transaction_id, data["payment_details"]["vendor"], data["payment_details"]["amount"], "Success"))
-        conn.commit()
-        conn.close()
-        return jsonify({"status": "Success", "transaction": transaction}), 200
-    except Exception as e:
-        return jsonify({"status": "Failed", "error": str(e)}), 500
+    # Retry Payment Processing with Payman AI SDK
+    retries = 3
+    for attempt in range(retries):
+        try:
+            payment = payman.payments.send_payment(
+                payment_destination_id=data["payment_details"]["vendor"],
+                amount_decimal=data["payment_details"]["amount"],
+                memo="Invoice Payment"
+            )
+            
+            cursor.execute("INSERT INTO transactions (id, vendor, amount, status) VALUES (?, ?, ?, ?)",
+                           (transaction_id, data["payment_details"]["vendor"], data["payment_details"]["amount"], "Success"))
+            conn.commit()
+            conn.close()
+            return jsonify({"status": "Success", "transaction": payment}), 200
+        except Exception as e:
+            print(f"Payman API request failed, retrying... ({attempt + 1}/{retries})")
+            time.sleep(2)  # Wait before retrying
+
+    return jsonify({"status": "Failed", "error": "Payman API unavailable after retries."}), 500
 
 if __name__ == "__main__":
     app.run(debug=True)
